@@ -55,7 +55,8 @@
     "rules": {
       "type": "object",
       "properties": {
-        "maxPerRound": { "type": "integer", "minimum": 0, "description": "Portions max par personne et par tournée (0 = illimité)" },
+        "maxPerRound": { "type": "integer", "minimum": 0, "description": "Limite de portions par personne et par tournée proposée dans les réglages de la table" },
+        "limitByDefault": { "type": "boolean", "default": false, "description": "Activer cette limite dès l'ouverture de la table (sinon l'hôte l'active s'il le souhaite)" },
         "wastePenalty": { "type": "number", "minimum": 0, "description": "Pénalité par portion non consommée" },
         "note": { "type": "string" }
       }

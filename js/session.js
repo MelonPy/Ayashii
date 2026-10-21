@@ -67,6 +67,11 @@ export class TableSession {
     return this.state.period || this.restaurant.detectPeriod();
   }
 
+  // 0 = pas de limite.
+  get limit() {
+    return this.state.limit ?? this.restaurant.defaultLimit;
+  }
+
   get mine() {
     return this.state.current.get(this.me.id) || { items: {}, ready: false };
   }
@@ -122,6 +127,14 @@ export class TableSession {
 
   setPeriod(period) {
     if (this.isHost) this.emit('settings', { period });
+  }
+
+  setLimit(limit) {
+    if (this.isHost) this.emit('settings', { limit: Math.max(0, Math.min(99, limit)) });
+  }
+
+  setTableLabel(tableLabel) {
+    if (this.isHost) this.emit('settings', { tableLabel });
   }
 
   giveHost(to) {

@@ -7,7 +7,7 @@
 //   picks    { r, items, ready, name }    sélection d'une personne pour la tournée r
 //   send     { r, per }                   tournée r recopiée sur l'ardoise
 //   unsend   { r }                        annulation du dernier envoi
-//   settings { period }                   midi / soir…
+//   settings { period?, limit?, tableLabel? }  formule, limite par tournée, n° de table
 //   open     {}                           ouverture de la table (désigne l'hôte)
 //   host     { to }                       l'hôte confie la table à quelqu'un d'autre
 //   claim    {}                           reprise de la main si l'hôte est absent
@@ -73,6 +73,8 @@ export function derive(events) {
   const removed = new Map();
   const lastSeen = new Map();
   let period = null;
+  let limit = null;
+  let tableLabel = '';
 
   // L'hôte est l'auteur du premier `open` ; pour les tables ouvertes avant
   // l'existence de cet événement, la première personne arrivée.
@@ -103,7 +105,10 @@ export function derive(events) {
         if (isHost(e.m)) sent.delete(e.r);
         break;
       case 'settings':
-        if (isHost(e.m) && e.period) period = e.period;
+        if (!isHost(e.m)) break;
+        if (e.period) period = e.period;
+        if (Number.isInteger(e.limit) && e.limit >= 0 && e.limit < 100) limit = e.limit;
+        if (typeof e.tableLabel === 'string') tableLabel = e.tableLabel.trim().slice(0, 12);
         break;
       case 'host':
         if (isHost(e.m) && members.has(e.to)) {
@@ -142,6 +147,8 @@ export function derive(events) {
     current,
     history: [...sent.values()].sort((a, b) => a.r - b.r),
     period,
+    limit,
+    tableLabel,
     host,
     hostSince,
     removed,

@@ -3,6 +3,8 @@ import { TableSession, RELAY_URL } from './session.js';
 import { aggregate, currentPerMember } from './store.js';
 import { infoHtml } from './info.js';
 import { FORMATS, preferredFormat, rememberFormat, printDoc, toHtml, toText } from './print.js';
+import { toEscPos } from './escpos.js';
+import * as thermal from './thermal.js';
 import {
   load, save, uid, tableCode, normalizeCode, esc, euros, fold, initials, memberHue, timeLabel,
 } from './util.js';
@@ -190,6 +192,7 @@ class TableView {
     this.lastRound = s.state.round;
     this.lastSentCount = s.state.history.length;
     this.lastHost = s.state.host;
+    this.lastLimit = s.limit;
     this.wasRemoved = s.isRemoved;
     // Le rejeu de l'historique à l'arrivée ne doit pas déclencher de notifications.
     this.quietUntil = Date.now() + 3000;
@@ -362,11 +365,14 @@ class TableView {
       else if (action === 'share') shareTable(this.s);
       else if (action === 'copy-link') copyText(tableUrl(this.s), 'Lien copié');
       else if (action === 'period') this.s.setPeriod(el.dataset.period);
+      else if (action === 'limit-toggle') this.s.setLimit(this.s.limit ? 0 : this.r.suggestedLimit);
+      else if (action === 'limit-step') this.s.setLimit(Math.max(1, this.s.limit + Number(el.dataset.step)));
+      else if (action === 'table-label') this.editTableLabel();
       else if (action === 'profile') editProfile(this.r).then(ok => ok && this.s.join());
       else if (action === 'unsend') this.s.unsendRound(Number(el.dataset.round));
       else if (action === 'leave') go(`#/r/${this.r.id}`);
       else if (action === 'go-menu') this.switchTab('menu');
-      else if (action === 'print') this.openPrint(el.dataset.doc);
+      else if (action === 'print') this.openPrint(el.dataset.doc, { direct: !!el.dataset.direct });
       else if (action === 'manage') this.manageMember(el.dataset.member);
       else if (action === 'claim') this.confirmClaim();
       else if (action === 'rejoin') this.s.join({ force: true });
@@ -418,9 +424,9 @@ class TableView {
     if (next < 0) return;
     if (delta > 0) {
       if (!r.isAvailable(item, s.period)) return toast(this.offLabel(item));
-      if (r.limit && !r.isExtra(item) && r.countPortions(items) >= r.limit) {
+      if (s.limit && !r.isExtra(item) && r.countPortions(items) >= s.limit) {
         navigator.vibrate?.([30, 40, 30]);
-        return toast(`Maximum ${r.limit} portions par personne et par tournée.`);
+        return toast(`Maximum ${s.limit} portions par personne et par tournée (réglable par l’hôte dans l’onglet Table).`);
       }
       navigator.vibrate?.(8);
     }
@@ -455,6 +461,12 @@ class TableView {
         : `${s.hostMember?.name || 'Quelqu’un'} est maintenant l’hôte de la table.`);
     }
     this.lastHost = st.host;
+    if (s.limit !== this.lastLimit && !s.isHost && Date.now() > this.quietUntil) {
+      toast(s.limit
+        ? `L’hôte a fixé une limite de ${s.limit} portions par personne et par tournée.`
+        : 'L’hôte a levé la limite par tournée.');
+    }
+    this.lastLimit = s.limit;
     if (s.isRemoved && !this.wasRemoved && Date.now() > this.quietUntil) {
       toast('L’hôte vous a retiré·e de la table.');
     }
@@ -510,10 +522,11 @@ class TableView {
     }
 
     const count = r.countPortions(mine.items);
-    this.ref('mycount').innerHTML = r.limit
-      ? `<b>${count}</b>/${r.limit} <span>portions · tournée ${st.round}</span>`
+    const limit = s.limit;
+    this.ref('mycount').innerHTML = limit
+      ? `<b>${count}</b>/${limit} <span>portions · tournée ${st.round}</span>`
       : `<b>${count}</b> <span>portion${count > 1 ? 's' : ''} · tournée ${st.round}</span>`;
-    this.ref('mycount').classList.toggle('is-full', !!r.limit && count >= r.limit);
+    this.ref('mycount').classList.toggle('is-full', !!limit && count >= limit);
     const readyBtn = app.querySelector('[data-action="ready"]');
     readyBtn.textContent = mine.ready ? '✓ Prêt·e' : 'J’ai fini';
     readyBtn.classList.toggle('btn-primary', mine.ready);
@@ -621,7 +634,7 @@ class TableView {
         </div>
         <div class="slate-actions">
           <button class="btn" data-action="copy-slate">Copier la liste</button>
-          <button class="btn" data-action="print" data-doc="slate">🖨️ Imprimer</button>
+          <button class="btn" data-action="print" data-doc="order" data-direct="1">🧾 Bon de commande</button>
           ${s.isHost ? '<button class="btn btn-primary span-2" data-action="send">Commande passée ✓</button>' : ''}
         </div>
         ${s.isHost ? '' : this.hostNoteHtml()}
@@ -707,23 +720,13 @@ class TableView {
         <div class="list-main">
           <b>${s.isHost ? 'Vous êtes l’hôte de la table' : `Hôte : ${esc(host?.name || '…')}`}</b>
           <small>${s.isHost
-            ? 'Vous validez l’envoi des tournées et choisissez la formule. Touchez « Gérer » à côté d’un convive pour lui confier la table.'
-            : 'L’hôte valide l’envoi des tournées et choisit la formule.'}</small>
+            ? 'Vous validez l’envoi des tournées et gérez les réglages de la table. Touchez « Gérer » à côté d’un convive pour lui confier la table.'
+            : 'L’hôte valide l’envoi des tournées et gère les réglages de la table.'}</small>
         </div>
         ${s.hostIdle ? '<button class="btn btn-small" data-action="claim">Prendre la main</button>' : ''}
       </section>
 
-      ${r.periods.length ? `
-        <section class="card">
-          <h2 class="card-title">Formule</h2>
-          <div class="segmented">
-            ${r.periods.map(p => `
-              <button data-action="period" data-period="${esc(p.id)}" aria-pressed="${p.id === period}" ${s.isHost ? '' : 'disabled'}>
-                <b>${esc(p.label)}</b><small>${euros(p.prices.adulte ?? 0)}</small>
-              </button>`).join('')}
-          </div>
-          <p class="muted small">${esc(r.periodById(period)?.hint || '')}${s.isHost ? '' : ' · Choisie par l’hôte.'}</p>
-        </section>` : ''}
+      ${this.settingsHtml()}
 
       <section class="card">
         <h2 class="card-title">Convives <span class="muted">(${members.length})</span></h2>
@@ -770,9 +773,9 @@ class TableView {
 
       <section class="card">
         <h2 class="card-title">Imprimer</h2>
-        <p class="muted small">Un petit document pour imprimante (ticket 58 / 80 mm ou feuille A4), ou en texte pour une appli d’imprimante thermique.</p>
+        <p class="muted small">Ticket 58 / 80 mm ou feuille A4, par l’imprimante du téléphone ou directement sur une imprimante thermique (Bluetooth, USB).</p>
         <div class="print-actions">
-          <button class="btn" data-action="print" data-doc="slate">Tournée en cours</button>
+          <button class="btn" data-action="print" data-doc="order">Bon de commande (tournée en cours)</button>
           <button class="btn" data-action="print" data-doc="recap">Récapitulatif</button>
           <button class="btn" data-action="print" data-doc="invite">QR code de la table</button>
         </div>
@@ -803,17 +806,44 @@ class TableView {
     });
   }
 
-  slateDoc() {
+  // Bon de commande à remettre au restaurant : gros numéros, quantités,
+  // n° de table et nombre de couverts, sans les prénoms.
+  orderDoc() {
+    const { r, s } = this;
+    const st = s.state;
     const { food, extras } = this.slateRows();
     const portions = food.reduce((n, row) => n + row.qty, 0);
-    const doc = [...this.docHeader(`Tournée ${this.s.state.round}`)];
+    const members = [...st.members.values()];
+    const kinds = new Map();
+    for (const m of members) kinds.set(m.kind, (kinds.get(m.kind) || 0) + 1);
+    const covers = [...kinds].map(([kind, n]) => `${n} × ${r.guestLabel(kind)}`).join(' · ');
+    const formula = r.periodById(s.period)?.label;
+
+    const doc = [
+      { t: 'text', text: r.name, center: true },
+      { t: 'title', text: 'Bon de commande' },
+    ];
+    if (st.tableLabel) doc.push({ t: 'big', text: `Table ${st.tableLabel}` });
+    doc.push(
+      { t: 'hr' },
+      { t: 'kv', k: `Tournée ${st.round}`, v: timeLabel(Date.now()), bold: true },
+      { t: 'text', text: `${members.length} couvert${members.length > 1 ? 's' : ''}${formula ? ` · ${formula}` : ''}`, small: true },
+    );
+    if (covers && kinds.size > 1) doc.push({ t: 'text', text: covers, small: true });
+    doc.push({ t: 'hr' });
     if (!food.length && !extras.length) doc.push({ t: 'text', text: 'Rien de choisi pour cette tournée.', center: true });
-    for (const { item, qty } of food) doc.push({ t: 'line', n: item.n || '•', qty, text: item.name });
-    if (food.length) doc.push({ t: 'hr' }, { t: 'kv', k: 'Portions', v: portions, bold: true });
-    if (extras.length) {
-      doc.push({ t: 'gap' }, { t: 'text', text: 'À demander au serveur :' });
-      for (const { item, qty } of extras) doc.push({ t: 'line', n: '•', qty, text: item.name, sub: item.desc });
+    for (const { item, qty } of food) {
+      const off = r.isAvailable(item, s.period) ? '' : ' (indisponible ?)';
+      doc.push({ t: 'line', n: item.n || '•', qty, text: item.name + off, big: true });
     }
+    if (food.length) doc.push({ t: 'hr' }, { t: 'kv', k: 'Total portions', v: portions, bold: true });
+    if (extras.length) {
+      doc.push({ t: 'gap' }, { t: 'text', text: 'Hors formule', bold: true });
+      for (const { item, qty } of extras) {
+        doc.push({ t: 'line', n: '•', qty, text: item.name, sub: [item.desc, euros(item.price * qty)].filter(Boolean).join(' · ') });
+      }
+    }
+    doc.push({ t: 'gap' }, { t: 'text', text: `Réf. ${s.code}-${st.round}`, center: true, small: true });
     return doc;
   }
 
@@ -852,15 +882,28 @@ class TableView {
     ];
   }
 
-  async openPrint(kind) {
-    const docs = {
-      slate: ['Imprimer la tournée', () => this.slateDoc()],
-      recap: ['Imprimer le récapitulatif', () => this.recapDoc()],
-      invite: ['Imprimer le QR code', () => this.inviteDoc()],
+  printDocs() {
+    return {
+      order: ['Bon de commande', () => this.orderDoc()],
+      recap: ['Récapitulatif', () => this.recapDoc()],
+      invite: ['QR code de la table', () => this.inviteDoc()],
     };
-    const [title, build] = docs[kind] || docs.slate;
+  }
+
+  // `direct` : avec une imprimante thermique déjà connectée, le bon part
+  // sans passer par l'aperçu.
+  async openPrint(kind, { direct = false } = {}) {
+    const docs = this.printDocs();
+    const [title, build] = docs[kind] || docs.order;
     const doc = build();
+    const round = this.s.state.round;
+    if (direct && thermal.connectedPrinter()) {
+      if (await this.printThermal(doc, preferredFormat())) this.afterOrderPrinted(kind, round);
+      return;
+    }
     let format = preferredFormat();
+    const bt = thermal.support.bluetooth;
+    const usb = thermal.support.usb;
     const choice = await dialog({
       title,
       body: `
@@ -868,21 +911,158 @@ class TableView {
           ${Object.entries(FORMATS).map(([id, f]) => `
             <label><input type="radio" name="format" value="${id}" ${id === format ? 'checked' : ''}><span>${esc(f.label)}</span></label>`).join('')}
         </div>
-        <div class="paper-preview"><div class="paper paper-${format}" data-preview>${toHtml(doc)}</div></div>`,
+        <div class="paper-preview"><div class="paper paper-${format}" data-preview>${toHtml(doc)}</div></div>
+        <div class="thermal">
+          <div class="thermal-head">
+            <b>Imprimante thermique</b>
+            <small data-thermal-status>${esc(this.thermalStatus())}</small>
+          </div>
+          <div class="thermal-actions">
+            ${thermal.connectedPrinter() ? '<button type="button" class="btn btn-small btn-primary" data-thermal="print">Imprimer sur le ticket</button>' : ''}
+            ${bt ? '<button type="button" class="btn btn-small" data-thermal="bluetooth">Bluetooth</button>' : ''}
+            ${usb ? '<button type="button" class="btn btn-small" data-thermal="usb">USB</button>' : ''}
+            <button type="button" class="btn btn-small" data-thermal="file">Fichier ESC/POS</button>
+          </div>
+          <label class="check"><input type="checkbox" data-thermal-ascii ${thermal.prefs().charset === 'ascii' ? 'checked' : ''}>
+            Sans accents (si l’imprimante affiche des caractères bizarres)</label>
+          ${bt || usb ? '' : '<p class="muted small">Ce navigateur ne peut pas se connecter directement à une imprimante (sur iPhone, utilisez « Imprimer » ou « Texte »).</p>'}
+        </div>`,
       actions: [
         { label: 'Fermer', value: false },
         { label: 'Texte', value: 'text' },
         { label: 'Imprimer', value: 'print', primary: true },
       ],
-      onOpen: dlg => dlg.addEventListener('change', ev => {
-        if (ev.target.name !== 'format') return;
-        format = ev.target.value;
-        rememberFormat(format);
-        dlg.querySelector('[data-preview]').className = `paper paper-${format}`;
-      }),
+      onOpen: dlg => {
+        dlg.addEventListener('change', ev => {
+          if (ev.target.name === 'format') {
+            format = ev.target.value;
+            rememberFormat(format);
+            dlg.querySelector('[data-preview]').className = `paper paper-${format}`;
+          } else if (ev.target.matches('[data-thermal-ascii]')) {
+            thermal.savePrefs({ charset: ev.target.checked ? 'ascii' : 'cp858' });
+          }
+        });
+        dlg.addEventListener('click', async ev => {
+          const btn = ev.target.closest('[data-thermal]');
+          if (!btn) return;
+          const what = btn.dataset.thermal;
+          if (what === 'file') {
+            const name = `${this.r.id}-${this.s.code}-${kind}.bin`;
+            return thermal.downloadBytes(toEscPos(doc, format, { charset: thermal.prefs().charset }), name);
+          }
+          try {
+            if (what === 'bluetooth') await thermal.connectBluetooth();
+            else if (what === 'usb') await thermal.connectUsb();
+          } catch (err) {
+            if (err?.name !== 'NotFoundError') toast(`Connexion impossible : ${err?.message || err}`);
+            return;
+          }
+          dlg.querySelector('[data-thermal-status]').textContent = this.thermalStatus();
+          if (await this.printThermal(doc, format)) {
+            dlg.close();
+            this.afterOrderPrinted(kind, round);
+          }
+        });
+      },
     });
-    if (choice === 'print') printDoc(doc, format);
-    else if (choice === 'text') shareText(toText(doc, format), `${this.r.name} · Table ${this.s.code}`);
+    if (choice === 'print') {
+      printDoc(doc, format);
+      this.afterOrderPrinted(kind, round);
+    } else if (choice === 'text') {
+      shareText(toText(doc, format), `${this.r.name} · Table ${this.s.code}`);
+    }
+  }
+
+  thermalStatus() {
+    const p = thermal.connectedPrinter();
+    if (p) return `Connectée : ${p.name}`;
+    return thermal.support.bluetooth || thermal.support.usb ? 'Non connectée' : 'Connexion directe indisponible ici';
+  }
+
+  async printThermal(doc, format) {
+    try {
+      await thermal.sendToPrinter(toEscPos(doc, format, { charset: thermal.prefs().charset }));
+      toast(`Envoyé à ${thermal.connectedPrinter()?.name || 'l’imprimante'}`);
+      return true;
+    } catch (err) {
+      thermal.forgetPrinter();
+      toast(`Impression impossible : ${err?.message || err}`);
+      return false;
+    }
+  }
+
+  // Une fois le bon imprimé, l'hôte peut directement clore la tournée.
+  afterOrderPrinted(kind, round) {
+    const { s } = this;
+    if (kind !== 'order' || !s.isHost || s.state.round !== round) return;
+    const { food, extras } = this.slateRows();
+    if (!food.length && !extras.length) return;
+    setTimeout(() => toast(`Bon remis au serveur ? Clôturez la tournée ${round}.`, {
+      action: { label: 'Tournée envoyée ✓', run: () => s.state.round === round && s.sendRound() },
+      duration: 10000,
+    }), 600);
+  }
+
+  settingsHtml() {
+    const { r, s } = this;
+    const period = s.period;
+    const limit = s.limit;
+    const host = s.isHost;
+    const off = host ? '' : 'disabled';
+    return `
+      <section class="card settings">
+        <h2 class="card-title">Réglages de la table</h2>
+        ${r.periods.length ? `
+          <h3 class="setting-title">Formule</h3>
+          <div class="segmented">
+            ${r.periods.map(p => `
+              <button data-action="period" data-period="${esc(p.id)}" aria-pressed="${p.id === period}" ${off}>
+                <b>${esc(p.label)}</b><small>${euros(p.prices.adulte ?? 0)}</small>
+              </button>`).join('')}
+          </div>
+          <p class="muted small">${esc(r.periodById(period)?.hint || '')}</p>` : ''}
+
+        <div class="setting">
+          <div class="list-main">
+            <b>Limite par tournée</b>
+            <small>${limit
+              ? `${limit} portion${limit > 1 ? 's' : ''} max par personne et par tournée`
+              : 'Désactivée : chacun commande autant qu’il veut'}</small>
+          </div>
+          <button class="switch" role="switch" aria-checked="${!!limit}" aria-label="Limite par tournée" data-action="limit-toggle" ${off}></button>
+        </div>
+        ${limit ? `
+          <div class="setting setting-sub">
+            <span class="muted small">Portions par personne</span>
+            <div class="stepper">
+              <button class="step" data-action="limit-step" data-step="-1" aria-label="Diminuer la limite" ${off}>−</button>
+              <span class="qty">${limit}</span>
+              <button class="step step-plus" data-action="limit-step" data-step="1" aria-label="Augmenter la limite" ${off}>+</button>
+            </div>
+          </div>` : ''}
+
+        <div class="setting">
+          <div class="list-main">
+            <b>N° de table au restaurant</b>
+            <small>${s.state.tableLabel ? `Table ${esc(s.state.tableLabel)}` : 'Non renseigné'} · imprimé sur le bon de commande</small>
+          </div>
+          ${host ? '<button class="btn btn-small" data-action="table-label">Modifier</button>' : ''}
+        </div>
+        ${host ? '' : '<p class="muted small">Seul l’hôte peut modifier ces réglages.</p>'}
+      </section>`;
+  }
+
+  async editTableLabel() {
+    const result = await dialog({
+      title: 'N° de table au restaurant',
+      body: `
+        <p>Le numéro (ou nom) de votre table dans la salle, pour que le serveur s’y retrouve sur le bon de commande imprimé.</p>
+        <label class="field">Table
+          <input class="input" name="label" maxlength="12" autocomplete="off" value="${esc(this.s.state.tableLabel)}" placeholder="Ex. : 12">
+        </label>`,
+      actions: [{ label: 'Annuler', value: false }, { label: 'Enregistrer', value: 'form', primary: true }],
+    });
+    if (result) this.s.setTableLabel(String(result.get('label') || ''));
   }
 
   billRows(members, period) {
@@ -1071,6 +1251,6 @@ function dialog({ title, body, actions, onOpen = null }) {
     });
     dlg.showModal();
     onOpen?.(dlg);
-    dlg.querySelector('input:not([type=radio])')?.focus();
+    dlg.querySelector('input:not([type=radio]):not([type=checkbox])')?.focus();
   });
 }

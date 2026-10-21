@@ -12,8 +12,9 @@ Premier restaurant : **Nation Ayashi** (formule à volonté, 88 numéros + soupe
 1. Quelqu'un ouvre une table → un code à 6 caractères + un QR code. Cette personne
    devient l'**hôte** de la table (voir plus bas).
 2. Les autres scannent le QR code (ou tapent le code) et donnent leur prénom.
-3. Chacun choisit ses plats dans l'onglet **Menu** (limite de 5 portions par personne
-   et par tournée, plats « soir & week-end » grisés le midi) puis appuie sur « J'ai fini ».
+3. Chacun choisit ses plats dans l'onglet **Menu** (plats « soir & week-end » grisés le
+   midi) puis appuie sur « J'ai fini ». Pas de limite par défaut : l'hôte peut activer
+   une limite de portions par personne et par tournée dans **Table → Réglages**.
 4. L'onglet **Ardoise** affiche le total trié par numéro, qui a pris quoi et qui n'a pas
    encore fini. Touchez une ligne pour la barrer une fois recopiée.
 5. Une fois l'ardoise remise au serveur, l'hôte appuie sur **Commande passée ✓**. Tout
@@ -25,7 +26,8 @@ Premier restaurant : **Nation Ayashi** (formule à volonté, 88 numéros + soupe
 ### L'hôte de la table
 
 Celui qui ouvre la table en garde le contrôle : lui seul peut valider ou annuler l'envoi
-d'une tournée, choisir la formule (midi / soir) et gérer les convives (bouton **Gérer** :
+d'une tournée, modifier les réglages (formule midi / soir, limite par tournée, n° de
+table au restaurant) et gérer les convives (bouton **Gérer** :
 confier la table à quelqu'un d'autre, ou retirer une personne partie ou connectée par
 erreur). Les autres voient l'ardoise et peuvent la copier ou l'imprimer.
 Si l'hôte ne donne plus signe de vie pendant 15 minutes (téléphone éteint…), n'importe
@@ -40,13 +42,27 @@ quel convive peut **prendre la main**.
   (enregistrés sur le téléphone, par restaurant). Tant qu'on n'en a pas, elle propose les
   suggestions du restaurant (`favorites` dans le JSON).
 
-### Impression
+### Impression et bon de commande
 
-Le module `js/print.js` produit de petits documents imprimables : la tournée en cours,
-le récapitulatif de la table (tournées + addition estimée) et une affichette avec le QR
-code pour rejoindre la table. Trois formats : ticket 58 mm, ticket 80 mm (imprimantes
-thermiques) ou feuille A4, avec aperçu. Le bouton **Texte** partage une version texte
-brut à largeur fixe, pratique pour les applis d'impression thermique Bluetooth (ESC/POS).
+Sur l'**Ardoise**, le bouton **🧾 Bon de commande** imprime la tournée pour la remettre au
+restaurant : n° de table dans la salle (réglage de l'hôte), tournée, heure, nombre de
+couverts et formule, puis les numéros et quantités en gros caractères, le total de
+portions et les boissons à part. Une fois le bon imprimé, l'hôte peut clore la tournée
+d'un geste (« Tournée envoyée ✓ »). L'onglet **Table** imprime aussi le récapitulatif
+(tournées + addition estimée) et une affichette avec le QR code de la table.
+
+- `js/print.js` : les documents (liste de blocs), rendus en HTML (aperçu et impression par
+  le navigateur, formats ticket 58 mm, 80 mm ou A4) et en texte à largeur fixe (« Texte »).
+- `js/escpos.js` : les mêmes documents en commandes **ESC/POS** pour imprimante thermique
+  (accents en page de code PC858, gros caractères, QR code, coupe du papier ; option
+  « sans accents » pour les modèles qui n'ont pas PC858).
+- `js/thermal.js` : connexion directe à l'imprimante depuis le navigateur, en
+  **Bluetooth** (Web Bluetooth) ou **USB** (WebUSB) — Chrome / Edge sur Android et
+  ordinateur, pas sur iPhone. Une fois l'imprimante connectée, le bouton « Bon de
+  commande » imprime directement, sans aperçu. « Fichier ESC/POS » télécharge le ticket
+  brut, à envoyer par exemple à une imprimante réseau : `nc <ip-imprimante> 9100 < bon.bin`.
+
+Ces chemins ont été testés avec une imprimante simulée ; à valider avec un vrai modèle.
 
 ## Synchronisation
 
@@ -71,7 +87,8 @@ Le format est décrit par `restaurants/schema.json` (JSON Schema : les éditeurs
 VS Code complètent et vérifient automatiquement grâce à la ligne `"$schema"`).
 
 1. Créer `restaurants/<id>.json` sur le modèle de `restaurants/nation-ayashi.json` :
-   - `rules.maxPerRound` : portions max par personne et par tournée (0 ou absent = illimité) ;
+   - `rules.maxPerRound` : limite de portions par personne et par tournée proposée à l'hôte
+     (désactivée à l'ouverture de la table, sauf `rules.limitByDefault: true`) ;
    - `periods` : formules et leurs prix par type de convive (`schedule` permet de
      détecter automatiquement le midi) ;
    - `categories` : `periods` pour restreindre une catégorie (ex. soir uniquement),
