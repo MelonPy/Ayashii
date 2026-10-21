@@ -651,6 +651,24 @@ button { font: inherit; color: inherit; }
 .bill tfoot td { font-size: 1rem; border-top: 2px solid var(--ink); }
 .bill + p { margin: 10px 0 0; }
 
+/* ---------- Table clôturée ---------- */
+
+.banner-closed { background: var(--navy); color: var(--navy-ink); }
+.is-closed .stepper, .is-closed [data-action="ready"], .is-closed .fav { display: none; }
+.is-closed .item { opacity: .75; }
+.closed-card {
+  padding: 28px 20px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.closed-ico { font: 40px/1 var(--emoji); }
+.closed-card h2 { margin: 10px 0 6px; }
+.closed-card p { margin: 0 0 10px; }
+.closed-actions { display: grid; gap: 8px; margin-top: 16px; }
+.btn-danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+
 /* ---------- Réglages de la table ---------- */
 
 .setting-title { margin: 0 0 8px; font-size: .9rem; }

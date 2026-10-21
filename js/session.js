@@ -1,7 +1,7 @@
 // Une table ouverte sur ce téléphone : journal d'événements local + relais.
 
 import { Relay } from './sync.js';
-import { EventLog, PROTOCOL, HOST_IDLE_MS, derive, currentPerMember } from './store.js';
+import { EventLog, PROTOCOL, HOST_IDLE_MS, TABLE_TTL_MS, derive, currentPerMember } from './store.js';
 import { uid } from './util.js';
 
 const params = new URLSearchParams(location.search);
@@ -91,7 +91,24 @@ export class TableSession {
   // L'hôte n'a rien fait depuis longtemps (téléphone éteint, parti…).
   get hostIdle() {
     const seen = this.state.lastSeen.get(this.state.host) ?? 0;
-    return !this.isHost && Date.now() - seen >= HOST_IDLE_MS;
+    return !this.isHost && !this.isClosed && Date.now() - seen >= HOST_IDLE_MS;
+  }
+
+  // Heure de clôture automatique (6 h après l'ouverture).
+  get autoCloseAt() {
+    return this.state.openedAt === null ? null : this.state.openedAt + TABLE_TTL_MS;
+  }
+
+  // null tant que la table est ouverte, sinon { auto, ts, by? }.
+  get closure() {
+    const { closed } = this.state;
+    if (closed) return { auto: false, ...closed };
+    const at = this.autoCloseAt;
+    return at !== null && Date.now() >= at ? { auto: true, ts: at } : null;
+  }
+
+  get isClosed() {
+    return !!this.closure;
   }
 
   get syncStatus() {
@@ -101,7 +118,7 @@ export class TableSession {
   // `force` : revenir après avoir été retiré·e de la table par l'hôte.
   join({ isNew = false, force = false } = {}) {
     if (isNew && !this.state.host) this.emit('open', {});
-    if (this.isRemoved && !force) return;
+    if (this.isClosed || (this.isRemoved && !force)) return;
     const m = this.state.members.get(this.me.id);
     if (!m || m.name !== this.me.name || m.kind !== this.me.kind) {
       this.emit('member', { name: this.me.name, kind: this.me.kind });
@@ -110,12 +127,13 @@ export class TableSession {
   }
 
   setPicks(items, ready = this.mine.ready) {
+    if (this.isClosed) return;
     const r = this.state.round;
     this.emit('picks', { r, items, ready, name: this.me.name }, `picks|${r}`);
   }
 
   sendRound() {
-    if (!this.isHost) return null;
+    if (!this.isHost || this.isClosed) return null;
     const r = this.state.round;
     this.emit('send', { r, per: currentPerMember(this.state) });
     return r;
@@ -147,5 +165,13 @@ export class TableSession {
 
   removeMember(target) {
     if (this.isHost && target !== this.me.id) this.emit('kick', { target });
+  }
+
+  closeTable() {
+    if (this.isHost && !this.isClosed) this.emit('close', {});
+  }
+
+  reopenTable() {
+    if (this.isHost && this.isClosed) this.emit('reopen', {});
   }
 }

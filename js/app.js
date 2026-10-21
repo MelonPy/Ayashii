@@ -63,7 +63,7 @@ async function showHome() {
         <div class="list">
           ${recent.map(t => `
             <a class="list-row" href="#/r/${esc(t.rid)}/t/${esc(t.code)}">
-              <span class="list-main"><b>${esc(t.name)}</b><small>Table ${esc(t.code)} · ${timeLabel(t.ts)}</small></span>
+              <span class="list-main"><b>${esc(t.name)}</b><small>Table ${esc(t.code)} · ${t.closed ? 'clôturée' : timeLabel(t.ts)}</small></span>
               <span class="chevron" aria-hidden="true">›</span>
             </a>`).join('')}
         </div>` : ''}
@@ -88,6 +88,10 @@ function rememberTable(restaurant, code) {
   const list = recentTables().filter(t => !(t.rid === restaurant.id && t.code === code));
   list.unshift({ rid: restaurant.id, name: restaurant.name, code, ts: Date.now() });
   save(RECENT_KEY, list.slice(0, 8));
+}
+
+function markTableClosed(rid, code, closed) {
+  save(RECENT_KEY, recentTables().map(t => (t.rid === rid && t.code === code ? { ...t, closed } : t)));
 }
 
 /* ---------- Page restaurant : créer / rejoindre ---------- */
@@ -194,6 +198,8 @@ class TableView {
     this.lastHost = s.state.host;
     this.lastLimit = s.limit;
     this.wasRemoved = s.isRemoved;
+    this.wasClosed = s.isClosed;
+    this.closeTimer = null;
     // Le rejeu de l'historique à l'arrivée ne doit pas déclencher de notifications.
     this.quietUntil = Date.now() + 3000;
   }
@@ -207,6 +213,7 @@ class TableView {
           <span>Vous avez été retiré·e de la table par l'hôte.</span>
           <button class="btn btn-small btn-primary" data-action="rejoin">Revenir</button>
         </div>
+        <div class="banner banner-closed" data-ref="closed" hidden></div>
         <section class="pane" data-pane="menu">
           <div class="menu-tools">
             <div class="mybar">
@@ -376,6 +383,12 @@ class TableView {
       else if (action === 'manage') this.manageMember(el.dataset.member);
       else if (action === 'claim') this.confirmClaim();
       else if (action === 'rejoin') this.s.join({ force: true });
+      else if (action === 'close-table') this.confirmClose();
+      else if (action === 'reopen-table') this.s.reopenTable();
+      else if (action === 'new-table') {
+        newTableCode = tableCode();
+        go(`#/r/${this.r.id}/t/${newTableCode}`);
+      }
     });
 
     app.querySelector('[data-pane="slate"]').addEventListener('click', ev => {
@@ -418,6 +431,7 @@ class TableView {
     const { r, s } = this;
     const item = r.itemsById.get(id);
     if (!item) return;
+    if (s.isClosed) return toast('La table est clôturée : plus de commande possible.');
     if (s.isRemoved) return toast('Revenez à la table pour commander (bandeau en haut).');
     const items = { ...s.mine.items };
     const next = (items[id] || 0) + delta;
@@ -471,12 +485,57 @@ class TableView {
       toast('L’hôte vous a retiré·e de la table.');
     }
     this.wasRemoved = s.isRemoved;
-    this.ref('removed').hidden = !s.isRemoved;
+    this.ref('removed').hidden = !s.isRemoved || s.isClosed;
+    this.updateClosure();
 
     this.updateStatus();
     this.updateMenu();
     this.renderSlate();
     this.renderTableInfo();
+  }
+
+  // Clôture : bandeau, mémorisation dans « Reprendre une table » et réveil
+  // à l'heure de la clôture automatique.
+  updateClosure() {
+    const { s } = this;
+    const closure = s.closure;
+    clearTimeout(this.closeTimer);
+    if (!closure && s.autoCloseAt !== null) {
+      const delay = s.autoCloseAt - Date.now() + 500;
+      if (delay < 2 ** 31) this.closeTimer = setTimeout(() => view === this && this.update(), delay);
+    }
+    if (!!closure !== this.wasClosed) {
+      if (Date.now() > this.quietUntil) {
+        toast(closure ? `Table clôturée${closure.auto ? ' automatiquement (6 h après l’ouverture)' : ''}.` : 'L’hôte a rouvert la table.');
+      }
+      markTableClosed(this.r.id, s.code, !!closure);
+    }
+    this.wasClosed = !!closure;
+    app.querySelector('.table-page').classList.toggle('is-closed', !!closure);
+    const banner = this.ref('closed');
+    banner.hidden = !closure;
+    if (closure) banner.innerHTML = `<span>🔒 ${esc(this.closureText(closure))}</span>`;
+  }
+
+  closureText(closure) {
+    if (closure.auto) return `Table clôturée automatiquement à ${timeLabel(closure.ts)}, 6 h après son ouverture.`;
+    const by = closure.by === this.s.me.id ? 'vous' : this.s.state.members.get(closure.by)?.name || 'l’hôte';
+    return `Table clôturée par ${by} à ${timeLabel(closure.ts)}.`;
+  }
+
+  async confirmClose() {
+    const { r, s } = this;
+    const pending = Object.values(currentPerMember(s.state)).reduce((n, items) => n + r.countPortions(items), 0);
+    const ok = await dialog({
+      title: 'Clôturer la table ?',
+      body: `<p>Plus personne ne pourra commander. L’historique, l’addition estimée et le récapitulatif restent consultables.${pending
+        ? ` <b>${pending} portion${pending > 1 ? 's' : ''} de la tournée ${s.state.round} n’${pending > 1 ? 'ont' : 'a'} pas été envoyée${pending > 1 ? 's' : ''}</b> et ser${pending > 1 ? 'ont' : 'a'} abandonnée${pending > 1 ? 's' : ''}.`
+        : ''}</p><p>Vous pourrez la rouvrir en cas d’erreur.</p>`,
+      actions: [{ label: 'Annuler', value: false }, { label: 'Clôturer', value: true, primary: true }],
+    });
+    if (!ok) return;
+    s.closeTable();
+    setTimeout(() => toast('Table clôturée.', { action: { label: 'Récapitulatif', run: () => this.openPrint('recap') }, duration: 8000 }), 300);
   }
 
   updateStatus() {
@@ -491,7 +550,7 @@ class TableView {
     dot.dataset.status = pending && status === 'online' ? 'pending' : status;
     dot.title = labels[status];
     dot.setAttribute('aria-label', labels[status]);
-    app.querySelector('.topbar-sub').textContent = `Table ${this.s.code} · Tournée ${this.s.state.round}`;
+    app.querySelector('.topbar-sub').textContent = `Table ${this.s.code} · ${this.s.isClosed ? 'Clôturée' : `Tournée ${this.s.state.round}`}`;
   }
 
   updateMenu() {
@@ -533,7 +592,7 @@ class TableView {
 
     const total = Object.values(currentPerMember(st)).reduce((n, items) => n + r.countPortions(items), 0);
     const badge = this.ref('badge');
-    badge.hidden = !total;
+    badge.hidden = !total || s.isClosed;
     badge.textContent = total;
 
     if (this.onlySelected) this.applyFilter();
@@ -597,6 +656,24 @@ class TableView {
     const waiting = members.filter(m => !st.current.get(m.id)?.ready);
     const pane = app.querySelector('[data-pane="slate"]');
     const period = s.period;
+
+    const closure = s.closure;
+    if (closure) {
+      const portions = st.history.reduce((n, h) => n + Object.values(h.per || {}).reduce((a, items) => a + r.countPortions(items), 0), 0);
+      pane.innerHTML = `
+        <div class="closed-card">
+          <span class="closed-ico" aria-hidden="true">🔒</span>
+          <h2>Table clôturée</h2>
+          <p class="muted">${esc(this.closureText(closure))}</p>
+          <p>${st.history.length} tournée${st.history.length > 1 ? 's' : ''} envoyée${st.history.length > 1 ? 's' : ''} · ${portions} portion${portions > 1 ? 's' : ''}</p>
+          <div class="closed-actions">
+            <button class="btn btn-primary" data-action="print" data-doc="recap">🧾 Récapitulatif</button>
+            <button class="btn" data-action="new-table">Ouvrir une nouvelle table</button>
+            ${s.isHost ? '<button class="btn btn-ghost" data-action="reopen-table">Rouvrir cette table</button>' : ''}
+          </div>
+        </div>`;
+      return;
+    }
 
     pane.innerHTML = `
       <div class="slate-head">
@@ -742,7 +819,7 @@ class TableView {
                   <small>${esc(r.guestLabel(m.kind))} · ${n} portion${n > 1 ? 's' : ''}</small></div>
                 <span class="state ${cur?.ready ? 'ok' : ''}">${cur?.ready ? '✓ prêt·e' : 'choisit…'}</span>
                 ${me ? '<button class="btn btn-small" data-action="profile">Modifier</button>' : ''}
-                ${!me && s.isHost ? `<button class="btn btn-small" data-action="manage" data-member="${esc(m.id)}">Gérer</button>` : ''}
+                ${!me && s.isHost && !s.isClosed ? `<button class="btn btn-small" data-action="manage" data-member="${esc(m.id)}">Gérer</button>` : ''}
               </div>`;
           }).join('')}
         </div>
@@ -764,7 +841,7 @@ class TableView {
                     return `<li><span class="num small">${esc(item?.n || '•')}</span> ${agg.get(id).qty} × ${item?.icon ? `${esc(item.icon)} ` : ''}${esc(item?.name || id)}</li>`;
                   }).join('')}
                 </ul>
-                ${h.r === lastRound && s.isHost ? `<button class="btn btn-small" data-action="unsend" data-round="${h.r}">Annuler cet envoi</button>` : ''}
+                ${h.r === lastRound && s.isHost && !s.isClosed ? `<button class="btn btn-small" data-action="unsend" data-round="${h.r}">Annuler cet envoi</button>` : ''}
               </details>`;
           }).join('')}
         </section>` : ''}
@@ -782,6 +859,8 @@ class TableView {
       </section>
 
       ${infoHtml(r)}
+
+      ${this.closeCardHtml()}
 
       <button class="btn btn-block btn-ghost" data-action="leave">Quitter la table</button>
       <p class="muted small center">Les données de la table sont relayées par ${esc(new URL(RELAY_URL).host)} et effacées au bout de quelques heures.</p>`;
@@ -1003,11 +1082,31 @@ class TableView {
     }), 600);
   }
 
+  closeCardHtml() {
+    const { s } = this;
+    const closure = s.closure;
+    if (closure) {
+      return `
+        <section class="card">
+          <h2 class="card-title">🔒 Table clôturée</h2>
+          <p class="muted small">${esc(this.closureText(closure))}</p>
+          ${s.isHost ? '<button class="btn btn-block" data-action="reopen-table">Rouvrir la table</button>' : ''}
+        </section>`;
+    }
+    const at = s.autoCloseAt;
+    return `
+      <section class="card">
+        <h2 class="card-title">Clôture de la table</h2>
+        <p class="muted small">${at !== null ? `Clôture automatique à ${timeLabel(at)} (6 h après l’ouverture). ` : ''}Une fois clôturée, plus personne ne peut commander.</p>
+        ${s.isHost ? '<button class="btn btn-block btn-danger" data-action="close-table">Clôturer la table maintenant</button>' : '<p class="muted small">Seul l’hôte peut la clôturer avant.</p>'}
+      </section>`;
+  }
+
   settingsHtml() {
     const { r, s } = this;
     const period = s.period;
     const limit = s.limit;
-    const host = s.isHost;
+    const host = s.isHost && !s.isClosed;
     const off = host ? '' : 'disabled';
     return `
       <section class="card settings">
@@ -1048,7 +1147,7 @@ class TableView {
           </div>
           ${host ? '<button class="btn btn-small" data-action="table-label">Modifier</button>' : ''}
         </div>
-        ${host ? '' : '<p class="muted small">Seul l’hôte peut modifier ces réglages.</p>'}
+        ${host ? '' : `<p class="muted small">${s.isClosed ? 'Table clôturée : réglages figés.' : 'Seul l’hôte peut modifier ces réglages.'}</p>`}
       </section>`;
   }
 

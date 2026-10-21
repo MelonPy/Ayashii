@@ -23,6 +23,15 @@ Premier restaurant : **Nation Ayashi** (formule à volonté, 88 numéros + soupe
    addition estimée (formule midi/soir, adulte/enfant, suppléments et boissons), les
    documents à imprimer et les informations pratiques du restaurant.
 
+### Clôture de la table
+
+Une table se clôture **automatiquement 6 heures après son ouverture**, ou plus tôt par
+l'hôte (**Table → Clôturer la table maintenant**). Une fois clôturée, plus personne ne
+peut commander ni modifier les réglages ; les choix non envoyés sont abandonnés.
+L'historique, l'addition estimée et le récapitulatif imprimable restent consultables, et
+la table apparaît comme « clôturée » dans « Reprendre une table ». En cas d'erreur, l'hôte
+peut la **rouvrir** (elle repart alors pour 6 heures).
+
 ### L'hôte de la table
 
 Celui qui ouvre la table en garde le contrôle : lui seul peut valider ou annuler l'envoi

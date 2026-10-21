@@ -12,6 +12,8 @@
 //   host     { to }                       l'hôte confie la table à quelqu'un d'autre
 //   claim    {}                           reprise de la main si l'hôte est absent
 //   kick     { target }                   l'hôte retire quelqu'un de la table
+//   close    {}                           l'hôte clôture la table
+//   reopen   {}                           l'hôte la rouvre (repart pour 6 h)
 //
 // Celui qui ouvre la table (l'hôte) est le seul à pouvoir valider ou annuler
 // l'envoi d'une tournée, changer de formule et gérer les convives : les
@@ -22,6 +24,8 @@ import { load, save } from './util.js';
 export const PROTOCOL = 1;
 // Sans nouvelles de l'hôte depuis ce délai, n'importe qui peut reprendre la main.
 export const HOST_IDLE_MS = 15 * 60 * 1000;
+// Une table se clôture d'elle-même ce délai après son ouverture.
+export const TABLE_TTL_MS = 6 * 3600 * 1000;
 
 const byTime = (a, b) => a.ts - b.ts || (a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0);
 
@@ -82,13 +86,28 @@ export function derive(events) {
   let hostSince = null;
   const isHost = m => host === null || m === host;
 
+  let openedAt = (sorted.find(e => e.t === 'open') || sorted[0])?.ts ?? null;
+  let closed = null;
+
   const touchMember = (e, patch) => {
     const prev = members.get(e.m);
     members.set(e.m, { id: e.m, kind: 'adulte', since: e.ts, ...prev, ...patch });
   };
 
   for (const e of sorted) {
+    // Table clôturée (par l'hôte, ou 6 h après l'ouverture) : plus rien ne
+    // compte, sauf sa réouverture par l'hôte.
+    if (closed || (openedAt !== null && e.ts >= openedAt + TABLE_TTL_MS)) {
+      if (e.t === 'reopen' && isHost(e.m)) {
+        closed = null;
+        openedAt = e.ts;
+      }
+      continue;
+    }
     switch (e.t) {
+      case 'close':
+        if (isHost(e.m)) closed = { by: e.m, ts: e.ts };
+        break;
       case 'member':
         removed.delete(e.m);
         touchMember(e, { name: e.name, kind: e.kind || 'adulte' });
@@ -151,6 +170,8 @@ export function derive(events) {
     tableLabel,
     host,
     hostSince,
+    openedAt,
+    closed,
     removed,
     lastSeen,
   };
