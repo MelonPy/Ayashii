@@ -1,6 +1,8 @@
 import { listRestaurants, getRestaurant } from './restaurant.js';
 import { TableSession, RELAY_URL } from './session.js';
 import { aggregate, currentPerMember } from './store.js';
+import { infoHtml } from './info.js';
+import { FORMATS, preferredFormat, rememberFormat, printDoc, toHtml, toText } from './print.js';
 import {
   load, save, uid, tableCode, normalizeCode, esc, euros, fold, initials, memberHue, timeLabel,
 } from './util.js';
@@ -109,7 +111,8 @@ async function showRestaurant(rid) {
         </section>` : ''}
       <section class="card">
         <h2 class="card-title">Nouvelle table</h2>
-        <p class="muted">Ouvrez une table, puis faites scanner le QR code (ou dictez le code) aux autres convives.</p>
+        <p class="muted">Ouvrez une table, puis faites scanner le QR code (ou dictez le code) aux autres convives.
+          Vous en serez l'hôte : c'est vous qui validerez l'envoi de chaque tournée.</p>
         <button class="btn btn-primary btn-block" data-action="create">Ouvrir une table</button>
       </section>
       <section class="card">
@@ -121,6 +124,7 @@ async function showRestaurant(rid) {
         </form>
       </section>
       ${r.rules.note ? `<p class="note">${esc(r.rules.note)}</p>` : ''}
+      ${infoHtml(r)}
     </main>`;
 
   app.querySelector('[data-action="create"]').addEventListener('click', () => {
@@ -181,8 +185,12 @@ class TableView {
     this.query = '';
     this.onlySelected = false;
     this.struck = new Set();
+    this.favKey = `ayashii.favorites.${this.r.id}`;
+    this.favs = new Set(load(this.favKey, []).filter(id => this.r.itemsById.has(id)));
     this.lastRound = s.state.round;
     this.lastSentCount = s.state.history.length;
+    this.lastHost = s.state.host;
+    this.wasRemoved = s.isRemoved;
     // Le rejeu de l'historique à l'arrivée ne doit pas déclencher de notifications.
     this.quietUntil = Date.now() + 3000;
   }
@@ -192,6 +200,10 @@ class TableView {
     app.innerHTML = `
       ${topbar({ title: r.name, subtitle: `Table ${s.code}`, back: `#/r/${r.id}`, status: true })}
       <main class="table-page" style="--resto:${esc(r.accent || '')}">
+        <div class="banner" data-ref="removed" hidden>
+          <span>Vous avez été retiré·e de la table par l'hôte.</span>
+          <button class="btn btn-small btn-primary" data-action="rejoin">Revenir</button>
+        </div>
         <section class="pane" data-pane="menu">
           <div class="menu-tools">
             <div class="mybar">
@@ -200,7 +212,8 @@ class TableView {
             </div>
             <input class="input search" type="search" data-ref="search" placeholder="Rechercher un plat ou un numéro" aria-label="Rechercher">
             <nav class="chips" data-ref="chips">
-              <button class="chip chip-selection" data-action="only-selected">★ Sélection</button>
+              <button class="chip" data-cat="favoris">★ Favoris</button>
+              <button class="chip chip-selection" data-action="only-selected">✓ Sélection</button>
               ${r.categories.map(c => `<button class="chip" data-cat="${esc(c.id)}">${c.icon ? `${esc(c.icon)} ` : ''}${esc(c.short || c.name)}</button>`).join('')}
             </nav>
           </div>
@@ -218,6 +231,7 @@ class TableView {
             <div class="share-actions">
               <button class="btn" data-action="share">Partager le lien</button>
               <button class="btn" data-action="copy-link">Copier</button>
+              <button class="btn" data-action="print" data-doc="invite" aria-label="Imprimer le QR code">🖨️</button>
             </div>
           </div>
           <div data-ref="table-dynamic"></div>
@@ -239,7 +253,7 @@ class TableView {
 
   menuHtml() {
     const { r } = this;
-    return r.categories.map(c => {
+    return `<section class="cat cat-favs" id="cat-favoris" data-ref="favs">${this.favsHtml()}</section>` + r.categories.map(c => {
       const items = r.items.filter(i => i.cat === c.id);
       if (!items.length) return '';
       return `
@@ -251,16 +265,36 @@ class TableView {
     }).join('');
   }
 
+  // Les favoris du convive (enregistrés sur ce téléphone) ou, à défaut,
+  // les suggestions du restaurant.
+  favsHtml() {
+    const { r } = this;
+    const mine = r.items.filter(i => this.favs.has(i.id));
+    const list = mine.length ? mine : r.favorites.map(id => r.itemsById.get(id));
+    const hint = mine.length
+      ? 'Enregistrés sur ce téléphone'
+      : list.length
+        ? 'Quelques idées pour commencer · touchez ☆ sur un plat pour créer vos favoris'
+        : 'Touchez ☆ sur un plat pour le retrouver ici';
+    return `
+      <h2 class="cat-title"><span aria-hidden="true">★</span> Favoris <small>${esc(hint)}</small></h2>
+      ${list.map(i => this.itemHtml(i)).join('')}`;
+  }
+
   itemHtml(item) {
     const extra = this.r.isExtra(item);
     const meta = [item.desc, item.pcs].filter(Boolean).join(' · ');
     const price = item.price ? `<span class="price">${extra ? '' : '+'}${euros(item.price)}</span>` : '';
     const search = fold([item.n, item.name, item.desc, item.pcs].filter(Boolean).join(' '));
+    const [main, ...more] = emojiParts(item.icon);
     return `
       <div class="item" data-item="${esc(item.id)}" data-search="${esc(search)}">
-        ${item.n ? `<span class="num">${esc(item.n)}</span>` : '<span class="num num-extra" aria-hidden="true">•</span>'}
+        <div class="vis ${item.n ? '' : 'vis-extra'}">
+          ${main ? `<span class="vis-emo" aria-hidden="true">${esc(main)}${more.length ? `<span class="vis-sub">${esc(more.join(''))}</span>` : ''}</span>` : ''}
+          ${item.n ? `<span class="vis-num">${esc(item.n)}</span>` : ''}
+        </div>
         <div class="item-info">
-          <div class="item-name">${esc(item.name)} ${price}</div>
+          <div class="item-name">${esc(item.name)} ${price}<button class="fav" data-fav aria-pressed="false" aria-label="Favori : ${esc(item.name)}"></button></div>
           ${meta ? `<div class="item-meta">${esc(meta)}</div>` : ''}
           <div class="item-off">${esc(this.offLabel(item))}</div>
           <div class="who" data-who></div>
@@ -296,6 +330,8 @@ class TableView {
     this.ref('menu').addEventListener('click', ev => {
       const step = ev.target.closest('[data-step]');
       if (step) this.step(step.closest('[data-item]').dataset.item, Number(step.dataset.step));
+      const fav = ev.target.closest('[data-fav]');
+      if (fav) this.toggleFav(fav.closest('[data-item]').dataset.item);
     });
 
     this.ref('search').addEventListener('input', ev => {
@@ -330,6 +366,10 @@ class TableView {
       else if (action === 'unsend') this.s.unsendRound(Number(el.dataset.round));
       else if (action === 'leave') go(`#/r/${this.r.id}`);
       else if (action === 'go-menu') this.switchTab('menu');
+      else if (action === 'print') this.openPrint(el.dataset.doc);
+      else if (action === 'manage') this.manageMember(el.dataset.member);
+      else if (action === 'claim') this.confirmClaim();
+      else if (action === 'rejoin') this.s.join({ force: true });
     });
 
     app.querySelector('[data-pane="slate"]').addEventListener('click', ev => {
@@ -355,10 +395,24 @@ class TableView {
     window.scrollTo({ top: this.scroll[tab] || 0 });
   }
 
+  toggleFav(id) {
+    const item = this.r.itemsById.get(id);
+    if (!item) return;
+    const on = !this.favs.has(id);
+    if (on) this.favs.add(id);
+    else this.favs.delete(id);
+    save(this.favKey, [...this.favs]);
+    this.ref('favs').innerHTML = this.favsHtml();
+    this.updateMenu();
+    this.applyFilter();
+    toast(on ? `★ ${item.name} ajouté aux favoris` : `${item.name} retiré des favoris`);
+  }
+
   step(id, delta) {
     const { r, s } = this;
     const item = r.itemsById.get(id);
     if (!item) return;
+    if (s.isRemoved) return toast('Revenez à la table pour commander (bandeau en haut).');
     const items = { ...s.mine.items };
     const next = (items[id] || 0) + delta;
     if (next < 0) return;
@@ -384,7 +438,7 @@ class TableView {
       if (sentNow && last) {
         const by = last.m === s.me.id ? 'Vous avez' : `${st.members.get(last.m)?.name || 'Quelqu’un'} a`;
         toast(`${by} envoyé la tournée ${last.r}. Place à la tournée ${st.round} !`, {
-          action: { label: 'Annuler', run: () => s.unsendRound(last.r) },
+          action: s.isHost ? { label: 'Annuler', run: () => s.unsendRound(last.r) } : null,
           duration: 6000,
         });
       } else if (st.history.length < this.lastSentCount) {
@@ -394,6 +448,18 @@ class TableView {
     }
     this.lastRound = st.round;
     this.lastSentCount = st.history.length;
+
+    if (st.host !== this.lastHost && this.lastHost && Date.now() > this.quietUntil) {
+      toast(s.isHost
+        ? 'Vous êtes maintenant l’hôte de la table : c’est vous qui validez les envois.'
+        : `${s.hostMember?.name || 'Quelqu’un'} est maintenant l’hôte de la table.`);
+    }
+    this.lastHost = st.host;
+    if (s.isRemoved && !this.wasRemoved && Date.now() > this.quietUntil) {
+      toast('L’hôte vous a retiré·e de la table.');
+    }
+    this.wasRemoved = s.isRemoved;
+    this.ref('removed').hidden = !s.isRemoved;
 
     this.updateStatus();
     this.updateMenu();
@@ -440,6 +506,7 @@ class TableView {
       row.classList.toggle('is-shared', by.length > 0);
       row.classList.toggle('is-off', !r.isAvailable(item, period));
       row.querySelector('[data-who]').innerHTML = by.map(([m, q]) => memberChip(st.members.get(m), q)).join('');
+      row.querySelector('[data-fav]').setAttribute('aria-pressed', this.favs.has(id));
     }
 
     const count = r.countPortions(mine.items);
@@ -462,6 +529,8 @@ class TableView {
 
   applyFilter() {
     const selected = new Set(Object.values(currentPerMember(this.s.state)).flatMap(Object.keys));
+    // Pendant une recherche ou un filtre, les favoris feraient doublon.
+    this.ref('favs').hidden = !!(this.query || this.onlySelected);
     let visible = 0;
     for (const section of app.querySelectorAll('[data-cat-section]')) {
       let shown = 0;
@@ -534,7 +603,7 @@ class TableView {
               <button class="slate-row ${this.struck.has(item.id) ? 'is-struck' : ''} ${r.isAvailable(item, period) ? '' : 'is-off'}" data-strike="${esc(item.id)}">
                 <span class="slate-num">${esc(item.n || '•')}</span>
                 <span class="slate-qty">${qty}</span>
-                <span class="slate-name">${esc(item.name)}${r.isAvailable(item, period) ? '' : ' <em>(indisponible)</em>'}
+                <span class="slate-name">${item.icon ? `<span class="slate-emo" aria-hidden="true">${esc(item.icon)}</span> ` : ''}${esc(item.name)}${r.isAvailable(item, period) ? '' : ' <em>(indisponible)</em>'}
                   <span class="who">${by.map(([m, q]) => memberChip(st.members.get(m), q)).join('')}</span></span>
               </button>`).join('')}
           </div>
@@ -545,15 +614,17 @@ class TableView {
               ${extras.map(({ item, qty, by }) => `
                 <div class="list-row">
                   <span class="slate-qty small">${qty}</span>
-                  <span class="list-main"><b>${esc(item.name)}</b><small>${esc(item.desc || '')} · ${euros(item.price * qty)}</small>
+                  <span class="list-main"><b>${item.icon ? `${esc(item.icon)} ` : ''}${esc(item.name)}</b><small>${esc(item.desc || '')} · ${euros(item.price * qty)}</small>
                     <span class="who">${by.map(([m, q]) => memberChip(st.members.get(m), q)).join('')}</span></span>
                 </div>`).join('')}
             </div>` : ''}
         </div>
         <div class="slate-actions">
           <button class="btn" data-action="copy-slate">Copier la liste</button>
-          <button class="btn btn-primary" data-action="send">Commande passée ✓</button>
+          <button class="btn" data-action="print" data-doc="slate">🖨️ Imprimer</button>
+          ${s.isHost ? '<button class="btn btn-primary span-2" data-action="send">Commande passée ✓</button>' : ''}
         </div>
+        ${s.isHost ? '' : this.hostNoteHtml()}
         ${r.rules.wastePenalty ? `<p class="note">Rappel : ${euros(r.rules.wastePenalty)} par portion non consommée. Commandez par petites tournées !</p>` : ''}
       ` : `
         <div class="empty">
@@ -562,7 +633,46 @@ class TableView {
         </div>`}`;
   }
 
+  hostNoteHtml() {
+    const { s } = this;
+    const host = s.hostMember;
+    return `
+      <div class="host-note">
+        <span aria-hidden="true">👑</span>
+        <p>${host ? `C’est <b>${esc(host.name)}</b>, l’hôte de la table, qui valide l’envoi de la tournée.` : 'Seul l’hôte de la table peut valider l’envoi de la tournée.'}
+          ${s.hostIdle ? '<br><small>L’hôte ne donne plus de nouvelles depuis un moment ?</small>' : ''}</p>
+        ${s.hostIdle ? '<button class="btn btn-small" data-action="claim">Prendre la main</button>' : ''}
+      </div>`;
+  }
+
+  async confirmClaim() {
+    const ok = await dialog({
+      title: 'Prendre la main ?',
+      body: `<p>${esc(this.s.hostMember?.name || 'L’hôte')} n’a rien fait depuis plus de 15 minutes. Vous deviendrez l’hôte de la table : c’est vous qui validerez les envois.</p>`,
+      actions: [{ label: 'Annuler', value: false }, { label: 'Prendre la main', value: true, primary: true }],
+    });
+    if (ok) this.s.claimHost();
+  }
+
+  async manageMember(id) {
+    const { s } = this;
+    const m = s.state.members.get(id);
+    if (!m || !s.isHost) return;
+    const choice = await dialog({
+      title: m.name,
+      body: `<p>Vous êtes l’hôte de la table. Vous pouvez lui confier la table (c’est alors cette personne qui validera les envois), ou la retirer de la table si elle est partie ou s’est connectée par erreur.</p>`,
+      actions: [
+        { label: 'Annuler', value: false },
+        { label: 'Retirer', value: 'kick' },
+        { label: 'Confier la table', value: 'host', primary: true },
+      ],
+    });
+    if (choice === 'host') s.giveHost(id);
+    else if (choice === 'kick') s.removeMember(id);
+  }
+
   async confirmSend() {
+    if (!this.s.isHost) return;
     const { food, extras } = this.slateRows();
     if (!food.length && !extras.length) return;
     const ok = await dialog({
@@ -588,19 +698,31 @@ class TableView {
       offline: `Hors-ligne${pending ? ` · ${pending} modification${pending > 1 ? 's' : ''} en attente` : ''}`,
     }[status];
 
+    const host = s.hostMember;
     box.innerHTML = `
       <p class="sync-line" data-status="${status}"><span class="dot"></span>${esc(syncText)}</p>
+
+      <section class="card host-card">
+        <span class="host-crown" aria-hidden="true">👑</span>
+        <div class="list-main">
+          <b>${s.isHost ? 'Vous êtes l’hôte de la table' : `Hôte : ${esc(host?.name || '…')}`}</b>
+          <small>${s.isHost
+            ? 'Vous validez l’envoi des tournées et choisissez la formule. Touchez « Gérer » à côté d’un convive pour lui confier la table.'
+            : 'L’hôte valide l’envoi des tournées et choisit la formule.'}</small>
+        </div>
+        ${s.hostIdle ? '<button class="btn btn-small" data-action="claim">Prendre la main</button>' : ''}
+      </section>
 
       ${r.periods.length ? `
         <section class="card">
           <h2 class="card-title">Formule</h2>
           <div class="segmented">
             ${r.periods.map(p => `
-              <button data-action="period" data-period="${esc(p.id)}" aria-pressed="${p.id === period}">
+              <button data-action="period" data-period="${esc(p.id)}" aria-pressed="${p.id === period}" ${s.isHost ? '' : 'disabled'}>
                 <b>${esc(p.label)}</b><small>${euros(p.prices.adulte ?? 0)}</small>
               </button>`).join('')}
           </div>
-          <p class="muted small">${esc(r.periodById(period)?.hint || '')}</p>
+          <p class="muted small">${esc(r.periodById(period)?.hint || '')}${s.isHost ? '' : ' · Choisie par l’hôte.'}</p>
         </section>` : ''}
 
       <section class="card">
@@ -613,10 +735,11 @@ class TableView {
             return `
               <div class="member">
                 ${avatar(m)}
-                <div class="list-main"><b>${esc(m.name)}${me ? ' <span class="muted">(moi)</span>' : ''}</b>
+                <div class="list-main"><b>${esc(m.name)}${me ? ' <span class="muted">(moi)</span>' : ''}${m.id === st.host ? ' <span class="host-tag">hôte</span>' : ''}</b>
                   <small>${esc(r.guestLabel(m.kind))} · ${n} portion${n > 1 ? 's' : ''}</small></div>
                 <span class="state ${cur?.ready ? 'ok' : ''}">${cur?.ready ? '✓ prêt·e' : 'choisit…'}</span>
                 ${me ? '<button class="btn btn-small" data-action="profile">Modifier</button>' : ''}
+                ${!me && s.isHost ? `<button class="btn btn-small" data-action="manage" data-member="${esc(m.id)}">Gérer</button>` : ''}
               </div>`;
           }).join('')}
         </div>
@@ -635,21 +758,134 @@ class TableView {
                 <ul>
                   ${ids.map(id => {
                     const item = r.itemsById.get(id);
-                    return `<li><span class="num small">${esc(item?.n || '•')}</span> ${agg.get(id).qty} × ${esc(item?.name || id)}</li>`;
+                    return `<li><span class="num small">${esc(item?.n || '•')}</span> ${agg.get(id).qty} × ${item?.icon ? `${esc(item.icon)} ` : ''}${esc(item?.name || id)}</li>`;
                   }).join('')}
                 </ul>
-                ${h.r === lastRound ? `<button class="btn btn-small" data-action="unsend" data-round="${h.r}">Annuler cet envoi</button>` : ''}
+                ${h.r === lastRound && s.isHost ? `<button class="btn btn-small" data-action="unsend" data-round="${h.r}">Annuler cet envoi</button>` : ''}
               </details>`;
           }).join('')}
         </section>` : ''}
 
       ${this.billHtml(members, period)}
 
+      <section class="card">
+        <h2 class="card-title">Imprimer</h2>
+        <p class="muted small">Un petit document pour imprimante (ticket 58 / 80 mm ou feuille A4), ou en texte pour une appli d’imprimante thermique.</p>
+        <div class="print-actions">
+          <button class="btn" data-action="print" data-doc="slate">Tournée en cours</button>
+          <button class="btn" data-action="print" data-doc="recap">Récapitulatif</button>
+          <button class="btn" data-action="print" data-doc="invite">QR code de la table</button>
+        </div>
+      </section>
+
+      ${infoHtml(r)}
+
       <button class="btn btn-block btn-ghost" data-action="leave">Quitter la table</button>
       <p class="muted small center">Les données de la table sont relayées par ${esc(new URL(RELAY_URL).host)} et effacées au bout de quelques heures.</p>`;
   }
 
-  billHtml(members, period) {
+  /* ----- Documents imprimables ----- */
+
+  docHeader(subtitle) {
+    const when = new Date().toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+    return [
+      { t: 'title', text: this.r.name },
+      { t: 'text', text: subtitle, center: true },
+      { t: 'text', text: `Table ${this.s.code} · ${when}`, center: true, small: true },
+      { t: 'hr' },
+    ];
+  }
+
+  itemLines(agg) {
+    return this.r.sortIds(agg.keys()).map(id => {
+      const item = this.r.itemsById.get(id);
+      return { t: 'line', n: item?.n || '•', qty: agg.get(id).qty, text: item?.name || id, sub: this.r.isExtra(item || {}) ? item?.desc : '' };
+    });
+  }
+
+  slateDoc() {
+    const { food, extras } = this.slateRows();
+    const portions = food.reduce((n, row) => n + row.qty, 0);
+    const doc = [...this.docHeader(`Tournée ${this.s.state.round}`)];
+    if (!food.length && !extras.length) doc.push({ t: 'text', text: 'Rien de choisi pour cette tournée.', center: true });
+    for (const { item, qty } of food) doc.push({ t: 'line', n: item.n || '•', qty, text: item.name });
+    if (food.length) doc.push({ t: 'hr' }, { t: 'kv', k: 'Portions', v: portions, bold: true });
+    if (extras.length) {
+      doc.push({ t: 'gap' }, { t: 'text', text: 'À demander au serveur :' });
+      for (const { item, qty } of extras) doc.push({ t: 'line', n: '•', qty, text: item.name, sub: item.desc });
+    }
+    return doc;
+  }
+
+  recapDoc() {
+    const { r, s } = this;
+    const st = s.state;
+    const doc = [...this.docHeader('Récapitulatif de la table')];
+    if (!st.history.length) doc.push({ t: 'text', text: 'Aucune tournée envoyée pour l’instant.', center: true });
+    for (const h of st.history) {
+      doc.push({ t: 'kv', k: `Tournée ${h.r}`, v: timeLabel(h.ts), bold: true }, ...this.itemLines(aggregate(h.per || {})), { t: 'gap' });
+    }
+    const members = [...st.members.values()];
+    const bill = this.billRows(members, s.period);
+    if (bill) {
+      doc.push({ t: 'hr' }, { t: 'text', text: `Addition estimée · ${r.periodById(s.period)?.label || ''}` });
+      for (const { m, formula, extras, total } of bill.rows) {
+        doc.push({ t: 'kv', k: `${m.name} (${r.guestLabel(m.kind)})`, v: euros(total) });
+        if (extras) doc.push({ t: 'text', text: `  formule ${euros(formula)} + suppl. ${euros(extras)}`, small: true });
+      }
+      doc.push({ t: 'hr' }, { t: 'kv', k: 'Total table', v: euros(bill.total), bold: true },
+        { t: 'text', text: 'Montant indicatif, hors pénalités. Seule l’addition du restaurant fait foi.', small: true });
+    }
+    return doc;
+  }
+
+  inviteDoc() {
+    return [
+      { t: 'title', text: this.r.name },
+      { t: 'text', text: 'Commandez depuis votre téléphone', center: true },
+      { t: 'hr' },
+      { t: 'qr', data: tableUrl(this.s) },
+      { t: 'text', text: 'Code de la table', center: true, small: true },
+      { t: 'big', text: this.s.code },
+      { t: 'text', text: 'Scannez le QR code, ou ouvrez le lien ci-dessous et entrez le code.', center: true, small: true },
+      { t: 'text', text: tableUrl(this.s), center: true, small: true },
+    ];
+  }
+
+  async openPrint(kind) {
+    const docs = {
+      slate: ['Imprimer la tournée', () => this.slateDoc()],
+      recap: ['Imprimer le récapitulatif', () => this.recapDoc()],
+      invite: ['Imprimer le QR code', () => this.inviteDoc()],
+    };
+    const [title, build] = docs[kind] || docs.slate;
+    const doc = build();
+    let format = preferredFormat();
+    const choice = await dialog({
+      title,
+      body: `
+        <div class="segmented segmented-small" role="radiogroup" aria-label="Format du papier">
+          ${Object.entries(FORMATS).map(([id, f]) => `
+            <label><input type="radio" name="format" value="${id}" ${id === format ? 'checked' : ''}><span>${esc(f.label)}</span></label>`).join('')}
+        </div>
+        <div class="paper-preview"><div class="paper paper-${format}" data-preview>${toHtml(doc)}</div></div>`,
+      actions: [
+        { label: 'Fermer', value: false },
+        { label: 'Texte', value: 'text' },
+        { label: 'Imprimer', value: 'print', primary: true },
+      ],
+      onOpen: dlg => dlg.addEventListener('change', ev => {
+        if (ev.target.name !== 'format') return;
+        format = ev.target.value;
+        rememberFormat(format);
+        dlg.querySelector('[data-preview]').className = `paper paper-${format}`;
+      }),
+    });
+    if (choice === 'print') printDoc(doc, format);
+    else if (choice === 'text') shareText(toText(doc, format), `${this.r.name} · Table ${this.s.code}`);
+  }
+
+  billRows(members, period) {
     const { r, s } = this;
     const extrasBy = new Map();
     for (const h of s.state.history) {
@@ -660,13 +896,19 @@ class TableView {
         }
       }
     }
-    if (!r.periods.length && !extrasBy.size) return '';
+    if (!r.periods.length && !extrasBy.size) return null;
     const rows = members.map(m => {
       const formula = r.formulaPrice(m.kind, period);
       const extras = extrasBy.get(m.id) || 0;
       return { m, formula, extras, total: formula + extras };
     });
-    const total = rows.reduce((acc, row) => acc + row.total, 0);
+    return { rows, total: rows.reduce((acc, row) => acc + row.total, 0) };
+  }
+
+  billHtml(members, period) {
+    const bill = this.billRows(members, period);
+    if (!bill) return '';
+    const { rows, total } = bill;
     return `
       <section class="card">
         <h2 class="card-title">Addition estimée</h2>
@@ -735,6 +977,11 @@ function memberChip(m, q) {
   return `<span class="mchip" style="--hue:${memberHue(m?.id || '')}">${esc(m?.name || '?')}${q > 1 ? ` ×${q}` : ''}</span>`;
 }
 
+// « 🍣🥑 » → ['🍣', '🥑'] : l'émoji principal et l'ingrédient affiché en médaillon.
+function emojiParts(icon) {
+  return String(icon || '').match(/\p{Extended_Pictographic}\uFE0F?/gu) || [];
+}
+
 function tableUrl(s) {
   const url = new URL(location.href);
   url.hash = `#/r/${s.restaurant.id}/t/${s.code}`;
@@ -752,6 +999,20 @@ async function shareTable(s) {
     }
   }
   copyText(url, 'Lien copié');
+}
+
+// Le texte brut part vers une appli d'impression (thermique Bluetooth…) via
+// le partage du téléphone, ou à défaut dans le presse-papiers.
+async function shareText(text, title) {
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, text });
+      return;
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+    }
+  }
+  copyText(text, 'Texte copié');
 }
 
 async function copyText(text, message) {
@@ -788,7 +1049,7 @@ function toast(message, { action = null, duration = 2800 } = {}) {
 }
 
 // Fenêtre modale. Une action de valeur 'form' renvoie le FormData du contenu.
-function dialog({ title, body, actions }) {
+function dialog({ title, body, actions, onOpen = null }) {
   return new Promise(resolve => {
     const dlg = document.createElement('dialog');
     dlg.className = 'dialog';
@@ -809,6 +1070,7 @@ function dialog({ title, body, actions }) {
       dlg.remove();
     });
     dlg.showModal();
+    onOpen?.(dlg);
     dlg.querySelector('input:not([type=radio])')?.focus();
   });
 }

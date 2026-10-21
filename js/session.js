@@ -1,7 +1,7 @@
 // Une table ouverte sur ce téléphone : journal d'événements local + relais.
 
 import { Relay } from './sync.js';
-import { EventLog, PROTOCOL, derive, currentPerMember } from './store.js';
+import { EventLog, PROTOCOL, HOST_IDLE_MS, derive, currentPerMember } from './store.js';
 import { uid } from './util.js';
 
 const params = new URLSearchParams(location.search);
@@ -71,11 +71,32 @@ export class TableSession {
     return this.state.current.get(this.me.id) || { items: {}, ready: false };
   }
 
+  get isHost() {
+    return this.state.host === this.me.id;
+  }
+
+  get hostMember() {
+    return this.state.members.get(this.state.host) || null;
+  }
+
+  get isRemoved() {
+    return this.state.removed.has(this.me.id);
+  }
+
+  // L'hôte n'a rien fait depuis longtemps (téléphone éteint, parti…).
+  get hostIdle() {
+    const seen = this.state.lastSeen.get(this.state.host) ?? 0;
+    return !this.isHost && Date.now() - seen >= HOST_IDLE_MS;
+  }
+
   get syncStatus() {
     return { status: this.relay.status, pending: this.relay.pending };
   }
 
-  join({ isNew = false } = {}) {
+  // `force` : revenir après avoir été retiré·e de la table par l'hôte.
+  join({ isNew = false, force = false } = {}) {
+    if (isNew && !this.state.host) this.emit('open', {});
+    if (this.isRemoved && !force) return;
     const m = this.state.members.get(this.me.id);
     if (!m || m.name !== this.me.name || m.kind !== this.me.kind) {
       this.emit('member', { name: this.me.name, kind: this.me.kind });
@@ -89,16 +110,29 @@ export class TableSession {
   }
 
   sendRound() {
+    if (!this.isHost) return null;
     const r = this.state.round;
     this.emit('send', { r, per: currentPerMember(this.state) });
     return r;
   }
 
   unsendRound(r) {
-    if (this.state.history.at(-1)?.r === r) this.emit('unsend', { r });
+    if (this.isHost && this.state.history.at(-1)?.r === r) this.emit('unsend', { r });
   }
 
   setPeriod(period) {
-    this.emit('settings', { period });
+    if (this.isHost) this.emit('settings', { period });
+  }
+
+  giveHost(to) {
+    if (this.isHost && to !== this.me.id) this.emit('host', { to });
+  }
+
+  claimHost() {
+    if (this.hostIdle) this.emit('claim', {});
+  }
+
+  removeMember(target) {
+    if (this.isHost && target !== this.me.id) this.emit('kick', { target });
   }
 }

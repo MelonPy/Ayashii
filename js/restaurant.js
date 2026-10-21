@@ -27,9 +27,20 @@ class Restaurant {
     this.rules ??= {};
     this.periods ??= [];
     this.guests ??= [{ id: 'adulte', label: 'Adulte' }];
+    // Suggestions de la maison, affichées dans « Favoris » tant que le convive
+    // n'a pas encore choisi les siens.
+    this.favorites ??= [];
+    this.info ??= {};
     this.categoriesById = new Map(this.categories.map(c => [c.id, c]));
-    this.items = this.items.map((item, order) => ({ ...item, id: item.id || item.n, order }));
+    // Sans illustration propre, un plat prend l'émoji de sa catégorie.
+    this.items = this.items.map((item, order) => ({
+      ...item,
+      id: item.id || item.n,
+      icon: item.icon || this.categoriesById.get(item.cat)?.icon || '',
+      order,
+    }));
     this.itemsById = new Map(this.items.map(item => [item.id, item]));
+    this.favorites = this.favorites.filter(id => this.itemsById.has(id));
   }
 
   get limit() {

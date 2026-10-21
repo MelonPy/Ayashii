@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema.json",
+  "title": "Restaurant (Ardoise)",
+  "description": "Format d'un fichier restaurants/<id>.json. Vérification : node tools/check-restaurants.mjs",
+  "type": "object",
+  "required": ["id", "name", "categories", "items"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$", "description": "Identifiant, utilisé dans l'URL : #/r/<id>" },
+    "name": { "type": "string" },
+    "subtitle": { "type": "string" },
+    "accent": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "Couleur principale de l'interface" },
+
+    "info": {
+      "type": "object",
+      "description": "Informations pratiques affichées sur la page du restaurant et dans l'onglet Table. Tout est facultatif.",
+      "additionalProperties": false,
+      "properties": {
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "website": { "type": "string", "format": "uri" },
+        "hours": {
+          "type": "array",
+          "description": "Horaires d'ouverture. Un jour absent = fermé.",
+          "items": {
+            "type": "object",
+            "required": ["days", "slots"],
+            "additionalProperties": false,
+            "properties": {
+              "days": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "description": "0 = dimanche … 6 = samedi" },
+              "slots": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "prefixItems": [{ "$ref": "#/$defs/hhmm" }, { "$ref": "#/$defs/hhmm" }],
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          }
+        },
+        "services": { "type": "array", "items": { "type": "string" }, "description": "Ex. : Sur place, À emporter, Livraison" },
+        "notes": { "type": "array", "items": { "type": "string" }, "description": "Remarques libres (allergènes, paiement, réservation…)" }
+      }
+    },
+
+    "favorites": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Identifiants de plats proposés dans la section « Favoris » tant que le convive n'a pas enregistré les siens."
+    },
+
+    "rules": {
+      "type": "object",
+      "properties": {
+        "maxPerRound": { "type": "integer", "minimum": 0, "description": "Portions max par personne et par tournée (0 = illimité)" },
+        "wastePenalty": { "type": "number", "minimum": 0, "description": "Pénalité par portion non consommée" },
+        "note": { "type": "string" }
+      }
+    },
+
+    "periods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "prices"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "hint": { "type": "string" },
+          "schedule": {
+            "type": "object",
+            "required": ["days", "from", "to"],
+            "properties": {
+              "days": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 } },
+              "from": { "$ref": "#/$defs/hhmm" },
+              "to": { "$ref": "#/$defs/hhmm" }
+            }
+          },
+          "prices": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0 } }
+        }
+      }
+    },
+
+    "guests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "properties": { "id": { "type": "string" }, "label": { "type": "string" } }
+      }
+    },
+
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "short": { "type": "string", "description": "Nom court pour les puces de navigation" },
+          "icon": { "$ref": "#/$defs/icon" },
+          "note": { "type": "string" },
+          "periods": { "type": "array", "items": { "type": "string" }, "description": "Catégorie disponible uniquement pendant ces formules" },
+          "extra": { "type": "boolean", "description": "Payant, hors formule et hors ardoise (boissons…)" }
+        }
+      }
+    },
+
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cat", "name"],
+        "anyOf": [{ "required": ["n"] }, { "required": ["id"] }],
+        "properties": {
+          "n": { "type": "string", "description": "Numéro à écrire sur l'ardoise (sert aussi d'identifiant)" },
+          "id": { "type": "string", "description": "Identifiant pour les plats sans numéro (boissons…)" },
+          "cat": { "type": "string" },
+          "name": { "type": "string" },
+          "icon": { "$ref": "#/$defs/icon", "description": "Par défaut : l'émoji de la catégorie" },
+          "desc": { "type": "string" },
+          "pcs": { "type": "string" },
+          "price": { "type": "number", "minimum": 0, "description": "Supplément (plats) ou prix (catégories extra)" },
+          "periods": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "hhmm": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+    "icon": {
+      "type": "string",
+      "description": "Un émoji, éventuellement suivi d'un second (ingrédient affiché en médaillon). Unicode ≤ 11 (2018) pour être lisible sur la plupart des téléphones."
+    }
+  }
+}
