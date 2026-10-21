@@ -8,10 +8,20 @@
 //   send     { r, per }                   tournée r recopiée sur l'ardoise
 //   unsend   { r }                        annulation du dernier envoi
 //   settings { period }                   midi / soir…
+//   open     {}                           ouverture de la table (désigne l'hôte)
+//   host     { to }                       l'hôte confie la table à quelqu'un d'autre
+//   claim    {}                           reprise de la main si l'hôte est absent
+//   kick     { target }                   l'hôte retire quelqu'un de la table
+//
+// Celui qui ouvre la table (l'hôte) est le seul à pouvoir valider ou annuler
+// l'envoi d'une tournée, changer de formule et gérer les convives : les
+// événements correspondants venant de quelqu'un d'autre sont ignorés.
 
 import { load, save } from './util.js';
 
 export const PROTOCOL = 1;
+// Sans nouvelles de l'hôte depuis ce délai, n'importe qui peut reprendre la main.
+export const HOST_IDLE_MS = 15 * 60 * 1000;
 
 const byTime = (a, b) => a.ts - b.ts || (a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0);
 
@@ -60,7 +70,15 @@ export function derive(events) {
   const members = new Map();
   const sent = new Map();
   const picks = new Map();
+  const removed = new Map();
+  const lastSeen = new Map();
   let period = null;
+
+  // L'hôte est l'auteur du premier `open` ; pour les tables ouvertes avant
+  // l'existence de cet événement, la première personne arrivée.
+  let host = (sorted.find(e => e.t === 'open') || sorted.find(e => e.t === 'member'))?.m ?? null;
+  let hostSince = null;
+  const isHost = m => host === null || m === host;
 
   const touchMember = (e, patch) => {
     const prev = members.get(e.m);
@@ -70,22 +88,44 @@ export function derive(events) {
   for (const e of sorted) {
     switch (e.t) {
       case 'member':
+        removed.delete(e.m);
         touchMember(e, { name: e.name, kind: e.kind || 'adulte' });
         break;
       case 'picks':
+        if (removed.has(e.m)) break;
         if (!members.has(e.m)) touchMember(e, { name: e.name || '?' });
         picks.set(`${e.m}|${e.r}`, e);
         break;
       case 'send':
-        if (!sent.has(e.r)) sent.set(e.r, e);
+        if (isHost(e.m) && !sent.has(e.r)) sent.set(e.r, e);
         break;
       case 'unsend':
-        sent.delete(e.r);
+        if (isHost(e.m)) sent.delete(e.r);
         break;
       case 'settings':
-        if (e.period) period = e.period;
+        if (isHost(e.m) && e.period) period = e.period;
+        break;
+      case 'host':
+        if (isHost(e.m) && members.has(e.to)) {
+          host = e.to;
+          hostSince = e.ts;
+        }
+        break;
+      case 'claim':
+        if (members.has(e.m) && (host === null || e.ts - (lastSeen.get(host) ?? 0) >= HOST_IDLE_MS)) {
+          host = e.m;
+          hostSince = e.ts;
+        }
+        break;
+      case 'kick':
+        if (isHost(e.m) && e.target !== host && members.has(e.target)) {
+          members.delete(e.target);
+          removed.set(e.target, { by: e.m, ts: e.ts });
+          for (const k of picks.keys()) if (k.startsWith(`${e.target}|`)) picks.delete(k);
+        }
         break;
     }
+    lastSeen.set(e.m, e.ts);
   }
 
   let round = 1;
@@ -93,7 +133,7 @@ export function derive(events) {
 
   const current = new Map();
   for (const e of picks.values()) {
-    if (e.r === round) current.set(e.m, { items: cleanItems(e.items), ready: !!e.ready });
+    if (e.r === round && members.has(e.m)) current.set(e.m, { items: cleanItems(e.items), ready: !!e.ready });
   }
 
   return {
@@ -102,6 +142,10 @@ export function derive(events) {
     current,
     history: [...sent.values()].sort((a, b) => a.r - b.r),
     period,
+    host,
+    hostSince,
+    removed,
+    lastSeen,
   };
 }
 
