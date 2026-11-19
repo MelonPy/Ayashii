@@ -5,7 +5,7 @@ où l'on commande en écrivant des quantités sur une ardoise. Chaque convive ch
 ses plats sur son téléphone ; l'application additionne tout et affiche la liste
 « numéro → quantité » à recopier sur l'ardoise.
 
-Premier restaurant : **Nation Ayashi** (formule à volonté, 88 numéros + soupes).
+Restaurants : **Nation Ayashi** et **Otaku** (Paris 12e, formules à volonté).
 
 ## Fonctionnement
 

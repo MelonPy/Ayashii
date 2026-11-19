@@ -2,5 +2,9 @@
   {
     "id": "nation-ayashi",
     "file": "nation-ayashi.json"
+  },
+  {
+    "id": "otaku",
+    "file": "otaku.json"
   }
 ]
