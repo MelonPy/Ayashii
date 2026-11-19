@@ -43,8 +43,14 @@ class Restaurant {
     this.favorites = this.favorites.filter(id => this.itemsById.has(id));
   }
 
-  get limit() {
-    return this.rules.maxPerRound || 0;
+  // Limite de portions par personne et par tournée : proposée dans les
+  // réglages de la table, désactivée par défaut sauf `rules.limitByDefault`.
+  get suggestedLimit() {
+    return this.rules.maxPerRound || 5;
+  }
+
+  get defaultLimit() {
+    return this.rules.limitByDefault ? this.suggestedLimit : 0;
   }
 
   // Les boissons & co. sont payantes : hors limite par tournée, hors ardoise.

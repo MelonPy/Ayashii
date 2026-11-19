@@ -7,11 +7,13 @@
 //   picks    { r, items, ready, name }    sélection d'une personne pour la tournée r
 //   send     { r, per }                   tournée r recopiée sur l'ardoise
 //   unsend   { r }                        annulation du dernier envoi
-//   settings { period }                   midi / soir…
+//   settings { period?, limit?, tableLabel? }  formule, limite par tournée, n° de table
 //   open     {}                           ouverture de la table (désigne l'hôte)
 //   host     { to }                       l'hôte confie la table à quelqu'un d'autre
 //   claim    {}                           reprise de la main si l'hôte est absent
 //   kick     { target }                   l'hôte retire quelqu'un de la table
+//   close    {}                           l'hôte clôture la table
+//   reopen   {}                           l'hôte la rouvre (repart pour 6 h)
 //
 // Celui qui ouvre la table (l'hôte) est le seul à pouvoir valider ou annuler
 // l'envoi d'une tournée, changer de formule et gérer les convives : les
@@ -22,6 +24,8 @@ import { load, save } from './util.js';
 export const PROTOCOL = 1;
 // Sans nouvelles de l'hôte depuis ce délai, n'importe qui peut reprendre la main.
 export const HOST_IDLE_MS = 15 * 60 * 1000;
+// Une table se clôture d'elle-même ce délai après son ouverture.
+export const TABLE_TTL_MS = 6 * 3600 * 1000;
 
 const byTime = (a, b) => a.ts - b.ts || (a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0);
 
@@ -73,6 +77,8 @@ export function derive(events) {
   const removed = new Map();
   const lastSeen = new Map();
   let period = null;
+  let limit = null;
+  let tableLabel = '';
 
   // L'hôte est l'auteur du premier `open` ; pour les tables ouvertes avant
   // l'existence de cet événement, la première personne arrivée.
@@ -80,13 +86,28 @@ export function derive(events) {
   let hostSince = null;
   const isHost = m => host === null || m === host;
 
+  let openedAt = (sorted.find(e => e.t === 'open') || sorted[0])?.ts ?? null;
+  let closed = null;
+
   const touchMember = (e, patch) => {
     const prev = members.get(e.m);
     members.set(e.m, { id: e.m, kind: 'adulte', since: e.ts, ...prev, ...patch });
   };
 
   for (const e of sorted) {
+    // Table clôturée (par l'hôte, ou 6 h après l'ouverture) : plus rien ne
+    // compte, sauf sa réouverture par l'hôte.
+    if (closed || (openedAt !== null && e.ts >= openedAt + TABLE_TTL_MS)) {
+      if (e.t === 'reopen' && isHost(e.m)) {
+        closed = null;
+        openedAt = e.ts;
+      }
+      continue;
+    }
     switch (e.t) {
+      case 'close':
+        if (isHost(e.m)) closed = { by: e.m, ts: e.ts };
+        break;
       case 'member':
         removed.delete(e.m);
         touchMember(e, { name: e.name, kind: e.kind || 'adulte' });
@@ -103,7 +124,10 @@ export function derive(events) {
         if (isHost(e.m)) sent.delete(e.r);
         break;
       case 'settings':
-        if (isHost(e.m) && e.period) period = e.period;
+        if (!isHost(e.m)) break;
+        if (e.period) period = e.period;
+        if (Number.isInteger(e.limit) && e.limit >= 0 && e.limit < 100) limit = e.limit;
+        if (typeof e.tableLabel === 'string') tableLabel = e.tableLabel.trim().slice(0, 12);
         break;
       case 'host':
         if (isHost(e.m) && members.has(e.to)) {
@@ -142,8 +166,12 @@ export function derive(events) {
     current,
     history: [...sent.values()].sort((a, b) => a.r - b.r),
     period,
+    limit,
+    tableLabel,
     host,
     hostSince,
+    openedAt,
+    closed,
     removed,
     lastSeen,
   };

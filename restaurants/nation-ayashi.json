@@ -23,8 +23,9 @@
   "favorites": ["06", "30", "50", "40", "55", "17"],
   "rules": {
     "maxPerRound": 5,
+    "limitByDefault": false,
     "wastePenalty": 5,
-    "note": "Choisissez 5 numéros maximum par personne, puis renouvelez la commande selon vos envies. Pour éviter le gâchis, 5 € par portion non consommée."
+    "note": "Commandez par tournées, autant de fois que vous le souhaitez. Le restaurant demande en principe 5 numéros maximum par personne et par tournée : l'hôte peut activer cette limite dans l'onglet Table. Pour éviter le gâchis, 5 € par portion non consommée."
   },
   "periods": [
     {
